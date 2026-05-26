@@ -1,0 +1,38 @@
+# Rust build artifacts
+/target
+*.o
+*.exe
+*.pdb
+*.ilk
+*.exp
+*.lib
+*.a
+*.dylib
+*.so
+*.d
+
+# macOS
+.DS_Store
+*.dSYM
+.AppleDouble
+.LSOverride
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+*.sublime-workspace
+*.sublime-project
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+
+# Project-specific
+acme-state/
