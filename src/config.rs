@@ -405,9 +405,11 @@ impl Config {
             "p384" => tls::KeyType::P384,
             "rsa2048" => tls::KeyType::Rsa2048,
             "rsa4096" => tls::KeyType::Rsa4096,
-            other => return Err(format!(
+            other => {
+                return Err(format!(
                 "Invalid --tls-key-type: {other}. Expected: ed25519, p256, p384, rsa2048, rsa4096"
-            )),
+            ))
+            }
         };
 
         let client_auth_mode = match self.tls_client_auth_mode.as_deref() {

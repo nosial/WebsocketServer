@@ -97,9 +97,17 @@ pub async fn handle_connection<S>(
     let child_monitor = {
         let child = child.clone();
         async move {
-            let mut guard = child.lock().await;
-            if let Some(ref mut c) = *guard {
-                let _ = c.wait().await;
+            loop {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+                let mut guard = child.lock().await;
+                match guard.as_mut().and_then(|c| c.try_wait().ok()).flatten() {
+                    Some(_) => {
+                        guard.take();
+                        return;
+                    }
+                    None if guard.is_none() => return,
+                    _ => {}
+                }
             }
         }
     };
