@@ -7,8 +7,7 @@ use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::Connector;
 
-const PHP_SCRIPT: &str = "test_echo.php";
-const PHP_BIN: &str = "php";
+const ECHO_BIN: &str = "echo-responder";
 
 /// A running server instance for integration tests.
 pub struct TestServer {
@@ -45,28 +44,26 @@ impl TestServer {
 
     fn start(port: u16, tls_args: Option<&[&str]>) -> Self {
         let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let script = manifest_dir.join(PHP_SCRIPT);
 
         // Try release first, then debug (works with both `cargo test` and `make test`)
-        let binary = manifest_dir
-            .join("target")
-            .join("release")
-            .join("websocket-server");
-        let debug_binary = manifest_dir
-            .join("target")
-            .join("debug")
-            .join("websocket-server");
-        let binary = if binary.exists() {
-            binary
-        } else {
-            debug_binary
+        let prefix = |name: &str| -> PathBuf {
+            let release = manifest_dir.join("target").join("release").join(name);
+            let debug = manifest_dir.join("target").join("debug").join(name);
+            if release.exists() {
+                release
+            } else {
+                debug
+            }
         };
+
+        let binary = prefix("websocket-server");
+        let echo_responder = prefix(ECHO_BIN);
 
         let mut cmd = Command::new(&binary);
         cmd.arg("--php-executable")
-            .arg(PHP_BIN)
+            .arg(&echo_responder)
             .arg("--script")
-            .arg(&script)
+            .arg(&echo_responder)
             .arg("--ws-port")
             .arg(port.to_string())
             .arg("--tcp-port")
