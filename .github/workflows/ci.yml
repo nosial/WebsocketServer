@@ -2,10 +2,12 @@ name: CI
 
 on:
   push:
-    branches: [main, master]
-    tags: ["v*"]
+    branches:
+      - '**'
+  release:
+    types: [created]
   pull_request:
-    branches: [main, master]
+    branches: [master]
 
 env:
   CARGO_TERM_COLOR: always
@@ -67,11 +69,10 @@ jobs:
 
   release:
     name: Release
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name == 'release'
     needs: [check, build]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
+    permissions: write-all
 
     steps:
       - uses: actions/download-artifact@v8
