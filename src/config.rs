@@ -210,10 +210,18 @@ pub struct Config {
     )]
     pub tls_force_automate: bool,
 
-    #[arg(long = "tls-ciphers", env = "WSS_CONFIG_TLS_CIPHERS", help = "TLS cipher suites (space-separated)")]
+    #[arg(
+        long = "tls-ciphers",
+        env = "WSS_CONFIG_TLS_CIPHERS",
+        help = "TLS cipher suites (space-separated)"
+    )]
     pub tls_ciphers: Vec<String>,
 
-    #[arg(long = "tls-curves", env = "WSS_CONFIG_TLS_CURVES", help = "TLS elliptic curves (space-separated)")]
+    #[arg(
+        long = "tls-curves",
+        env = "WSS_CONFIG_TLS_CURVES",
+        help = "TLS elliptic curves (space-separated)"
+    )]
     pub tls_curves: Vec<String>,
 
     #[arg(
@@ -268,7 +276,11 @@ pub struct Config {
     )]
     pub tls_dns_provider: Option<String>,
 
-    #[arg(long = "tls-dns-params", env = "WSS_CONFIG_TLS_DNS_PARAMS", help = "DNS provider parameters")]
+    #[arg(
+        long = "tls-dns-params",
+        env = "WSS_CONFIG_TLS_DNS_PARAMS",
+        help = "DNS provider parameters"
+    )]
     pub tls_dns_params: Vec<String>,
 
     #[arg(
@@ -309,13 +321,25 @@ pub struct Config {
     )]
     pub tls_resolvers: Vec<String>,
 
-    #[arg(long = "tls-eab-key-id", env = "WSS_CONFIG_TLS_EAB_KEY_ID", help = "External Account Binding key ID")]
+    #[arg(
+        long = "tls-eab-key-id",
+        env = "WSS_CONFIG_TLS_EAB_KEY_ID",
+        help = "External Account Binding key ID"
+    )]
     pub tls_eab_key_id: Option<String>,
 
-    #[arg(long = "tls-eab-mac-key", env = "WSS_CONFIG_TLS_EAB_MAC_KEY", help = "External Account Binding MAC key")]
+    #[arg(
+        long = "tls-eab-mac-key",
+        env = "WSS_CONFIG_TLS_EAB_MAC_KEY",
+        help = "External Account Binding MAC key"
+    )]
     pub tls_eab_mac_key: Option<String>,
 
-    #[arg(long = "tls-on-demand", env = "WSS_CONFIG_TLS_ON_DEMAND", help = "Enable on-demand certificates")]
+    #[arg(
+        long = "tls-on-demand",
+        env = "WSS_CONFIG_TLS_ON_DEMAND",
+        help = "Enable on-demand certificates"
+    )]
     pub tls_on_demand: bool,
 
     #[arg(

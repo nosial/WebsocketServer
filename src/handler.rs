@@ -20,8 +20,7 @@ pub struct RequestData {
     pub headers: HashMap<String, String>,
 }
 
-type SharedWsWriter<S> =
-    Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<S>, Message>>>;
+type SharedWsWriter<S> = Arc<Mutex<futures_util::stream::SplitSink<WebSocketStream<S>, Message>>>;
 
 pub async fn handle_connection<S>(
     ws_stream: WebSocketStream<S>,
@@ -120,7 +119,8 @@ pub async fn handle_connection<S>(
 
     let fwd_ws = forward_ws_to_tcp(ws_reader, tcp_writer, config.buffer_size);
     let fwd_tcp = forward_tcp_to_ws(tcp_reader, ws_writer.clone(), config.buffer_size);
-    let mut fwd_stdout = php_stdout.map(|s| Box::pin(forward_stdout_to_ws(s, ws_writer, config.buffer_size)));
+    let mut fwd_stdout =
+        php_stdout.map(|s| Box::pin(forward_stdout_to_ws(s, ws_writer, config.buffer_size)));
     let mut child_monitor = Box::pin(child_monitor);
 
     let mut conn_timeout = if config.connection_timeout > 0 {
