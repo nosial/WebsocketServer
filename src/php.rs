@@ -60,7 +60,7 @@ pub fn spawn_php(
             let reader = BufReader::new(stderr);
             let mut lines = reader.lines();
             while let Ok(Some(line)) = lines.next_line().await {
-                warn!("[PHP {}] {}", cid, line);
+                warn!("[PHP {cid}] {line}");
             }
         });
     }

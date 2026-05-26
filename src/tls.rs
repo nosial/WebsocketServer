@@ -80,7 +80,7 @@ impl AcmeConfig {
             info!("ACME custom DNS resolvers: {:?}", self.resolvers);
         }
         if let Some(ref domain) = self.dns_challenge_override_domain {
-            info!("ACME DNS challenge override domain: {}", domain);
+            info!("ACME DNS challenge override domain: {domain}");
         }
         if self.eab_key_id.is_some() || self.eab_mac_key.is_some() {
             info!("ACME External Account Binding configured");
@@ -220,14 +220,14 @@ impl TlsConfig {
         let (certs, key) = match &self.mode {
             TlsMode::SelfSigned => {
                 info!("Generating self-signed TLS certificate");
-                let domain = domains.first().map(|s| s.as_str()).unwrap_or("localhost");
+                let domain = domains.first().map_or("localhost", String::as_str);
                 self.generate_self_signed(domain)?
             }
             TlsMode::Manual {
                 cert_path,
                 key_path,
             } => {
-                info!("Loading TLS certificate from {:?}", cert_path);
+                info!("Loading TLS certificate from {cert_path:?}");
                 self.load_manual(cert_path, key_path)?
             }
             TlsMode::Automate => {
@@ -270,13 +270,13 @@ impl TlsConfig {
                     .iter()
                     .map(|name| {
                         let cs = cipher_suite_from_name(name)
-                            .ok_or_else(|| format!("Unknown cipher suite: {}", name))?;
+                            .ok_or_else(|| format!("Unknown cipher suite: {name}"))?;
                         provider
                             .cipher_suites
                             .iter()
                             .find(|s| s.suite() == cs)
                             .copied()
-                            .ok_or_else(|| format!("Cipher suite {} not available", name))
+                            .ok_or_else(|| format!("Cipher suite {name} not available"))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
                 if selected.is_empty() {
@@ -291,13 +291,13 @@ impl TlsConfig {
                     .iter()
                     .map(|name| {
                         let ng = named_group_from_name(name)
-                            .ok_or_else(|| format!("Unknown curve: {}", name))?;
+                            .ok_or_else(|| format!("Unknown curve: {name}"))?;
                         provider
                             .kx_groups
                             .iter()
                             .find(|g| g.name() == ng)
                             .copied()
-                            .ok_or_else(|| format!("Curve {} not available", name))
+                            .ok_or_else(|| format!("Curve {name} not available"))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
                 if selected.is_empty() {
@@ -413,7 +413,7 @@ impl TlsConfig {
         let key_path = acme_dir.join("key.pem");
 
         if !self.acme.force_automate && cert_path.exists() && key_path.exists() {
-            info!("Loading existing ACME certificate from {:?}", cert_path);
+            info!("Loading existing ACME certificate from {cert_path:?}");
             return self.load_manual(&cert_path, &key_path);
         }
 
@@ -421,12 +421,12 @@ impl TlsConfig {
             .first()
             .ok_or("At least one domain is required for ACME")?
             .clone();
-        let alt_names: Vec<&str> = domains.iter().skip(1).map(|s| s.as_str()).collect();
+        let alt_names: Vec<&str> = domains.iter().skip(1).map(String::as_str).collect();
 
         let cert_data = tokio::task::spawn_blocking({
             let acme_dir = acme_dir.clone();
             let primary = primary.clone();
-            let alt_names: Vec<String> = alt_names.iter().map(|s| s.to_string()).collect();
+            let alt_names: Vec<String> = alt_names.iter().map(|s| (*s).to_string()).collect();
             let key_type = self.key_type.clone();
             let email = self.acme.email.clone();
 
@@ -434,21 +434,21 @@ impl TlsConfig {
                 let persist = FilePersist::new(&acme_dir);
                 let url = DirectoryUrl::LetsEncrypt;
                 let dir = Directory::from_url(persist, url)
-                    .map_err(|e| format!("ACME directory: {}", e))?;
+                    .map_err(|e| format!("ACME directory: {e}"))?;
 
                 let acc = match &email {
-                    Some(e) => dir.account(e).map_err(|e| format!("ACME account: {}", e))?,
+                    Some(e) => dir.account(e).map_err(|e| format!("ACME account: {e}"))?,
                     None => dir
                         .account("admin@localhost")
-                        .map_err(|e| format!("ACME account: {}", e))?,
+                        .map_err(|e| format!("ACME account: {e}"))?,
                 };
 
                 let mut new_order = acc
                     .new_order(
                         &primary,
-                        &alt_names.iter().map(|s| s.as_str()).collect::<Vec<&str>>(),
+                        &alt_names.iter().map(String::as_str).collect::<Vec<&str>>(),
                     )
-                    .map_err(|e| format!("ACME order: {}", e))?;
+                    .map_err(|e| format!("ACME order: {e}"))?;
 
                 let csr_order = loop {
                     if let Some(csr) = new_order.confirm_validations() {
@@ -457,19 +457,19 @@ impl TlsConfig {
 
                     let auths = new_order
                         .authorizations()
-                        .map_err(|e| format!("ACME auths: {}", e))?;
+                        .map_err(|e| format!("ACME auths: {e}"))?;
 
                     for auth in &auths {
                         let chall = auth.http_challenge();
                         let token = chall.http_token();
                         let proof = chall.http_proof();
 
-                        info!("ACME HTTP-01 challenge: token={}", token);
+                        info!("ACME HTTP-01 challenge: token={token}");
 
                         let challenge_done = Arc::new(std::sync::atomic::AtomicBool::new(false));
                         let done = challenge_done.clone();
                         let token_c = token.to_string();
-                        let proof_c = proof.to_string();
+                        let proof_c = proof.clone();
 
                         std::thread::spawn(move || {
                             let rt = match tokio::runtime::Runtime::new() {
@@ -482,13 +482,13 @@ impl TlsConfig {
                         std::thread::sleep(Duration::from_millis(500));
                         chall
                             .validate(30_000)
-                            .map_err(|e| format!("ACME challenge validate: {}", e))?;
+                            .map_err(|e| format!("ACME challenge validate: {e}"))?;
                         challenge_done.store(true, std::sync::atomic::Ordering::SeqCst);
                     }
 
                     new_order
                         .refresh()
-                        .map_err(|e| format!("ACME refresh: {}", e))?;
+                        .map_err(|e| format!("ACME refresh: {e}"))?;
                 };
 
                 let pkey = match key_type {
@@ -501,18 +501,18 @@ impl TlsConfig {
 
                 let cert_order = csr_order
                     .finalize_pkey(pkey, 30_000)
-                    .map_err(|e| format!("ACME finalize: {}", e))?;
+                    .map_err(|e| format!("ACME finalize: {e}"))?;
                 let cert = cert_order
                     .download_and_save_cert()
-                    .map_err(|e| format!("ACME download: {}", e))?;
+                    .map_err(|e| format!("ACME download: {e}"))?;
 
                 let cert_pem = cert.certificate().to_string();
                 let key_pem = cert.private_key().to_string();
 
                 std::fs::write(acme_dir.join("cert.pem"), &cert_pem)
-                    .map_err(|e| format!("Write cert: {}", e))?;
+                    .map_err(|e| format!("Write cert: {e}"))?;
                 std::fs::write(acme_dir.join("key.pem"), &key_pem)
-                    .map_err(|e| format!("Write key: {}", e))?;
+                    .map_err(|e| format!("Write key: {e}"))?;
 
                 info!("ACME certificate saved to {:?}", acme_dir.join("cert.pem"));
 
@@ -520,7 +520,7 @@ impl TlsConfig {
             }
         })
         .await
-        .map_err(|e| format!("ACME task panicked: {}", e))??;
+        .map_err(|e| format!("ACME task panicked: {e}"))??;
 
         let certs =
             rustls_pemfile::certs(&mut cert_data.0.as_bytes()).collect::<Result<Vec<_>, _>>()?;
@@ -541,12 +541,12 @@ async fn serve_http_challenge_token(
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(e) => {
-            warn!("ACME HTTP challenge server failed to bind {}: {}", addr, e);
+            warn!("ACME HTTP challenge server failed to bind {addr}: {e}");
             return;
         }
     };
 
-    info!("ACME HTTP challenge server listening on {}", addr);
+    info!("ACME HTTP challenge server listening on {addr}");
 
     let proof_owned = proof.to_string();
     let token_owned = token.to_string();
@@ -589,7 +589,7 @@ async fn handle_acme_http_request(
         .nth(1)
         .unwrap_or("")
         .to_string();
-    let expected_path = format!("/.well-known/acme-challenge/{}", token);
+    let expected_path = format!("/.well-known/acme-challenge/{token}");
 
     let (status, body) = if path == expected_path {
         ("200 OK", proof)
@@ -621,7 +621,7 @@ pub async fn setup_acme_renewal(
 
     loop {
         tokio::select! {
-            _ = tokio::time::sleep(Duration::from_secs(86400)) => {
+            () = tokio::time::sleep(Duration::from_secs(86400)) => {
                 let should_renew = check_cert_renewal_needed(
                     &config.acme.directory,
                     config.acme.renewal_window_ratio,
@@ -634,7 +634,7 @@ pub async fn setup_acme_renewal(
                             *guard = Some(acceptor);
                             info!("ACME certificate renewed successfully");
                         }
-                        Err(e) => error!("ACME certificate renewal failed: {}", e),
+                        Err(e) => error!("ACME certificate renewal failed: {e}"),
                     }
                 }
             }

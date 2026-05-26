@@ -30,7 +30,7 @@ async fn test_ws_multiple_messages() {
     let (mut ws, _) = connect_async(&server.ws_url()).await.expect("connect");
 
     for i in 0..5 {
-        let msg = format!("msg {}", i);
+        let msg = format!("msg {i}");
         ws.send(Message::Text(msg.clone())).await.unwrap();
         let resp = tokio::time::timeout(std::time::Duration::from_secs(3), ws.next())
             .await
@@ -38,9 +38,9 @@ async fn test_ws_multiple_messages() {
             .expect("stream ended")
             .expect("recv error");
         let payload = match resp {
-            Message::Text(t) => t.to_string(),
+            Message::Text(t) => t.clone(),
             Message::Binary(b) => String::from_utf8(b).unwrap(),
-            other => panic!("expected text or binary, got {:?}", other),
+            other => panic!("expected text or binary, got {other:?}"),
         };
         assert_eq!(payload, msg.to_uppercase());
     }
@@ -101,8 +101,7 @@ async fn test_ws_clean_close() {
         Ok(Some(Ok(msg))) => {
             assert!(
                 msg.is_close() || msg.is_ping() || msg.is_pong(),
-                "Expected close or control frame after server drop, got {:?}",
-                msg
+                "Expected close or control frame after server drop, got {msg:?}"
             );
         }
         Ok(Some(Err(_))) => {} // connection reset — fine
@@ -151,8 +150,7 @@ async fn test_invalid_request() {
     if !buf.is_empty() {
         assert!(
             buf.contains("426") || buf.contains("400") || buf.contains("HTTP"),
-            "Unexpected response content: {:?}",
-            buf
+            "Unexpected response content: {buf:?}"
         );
     }
 }

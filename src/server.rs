@@ -21,28 +21,28 @@ pub async fn run_server(config: Arc<Config>) {
     let ws_listener = match TcpListener::bind(&ws_addr).await {
         Ok(l) => l,
         Err(e) => {
-            error!("Failed to bind WebSocket server to {}: {}", ws_addr, e);
+            error!("Failed to bind WebSocket server to {ws_addr}: {e}");
             return;
         }
     };
-    info!("WebSocket server listening on {}", ws_addr);
+    info!("WebSocket server listening on {ws_addr}");
 
     let tcp_addr = format!("{}:{}", config.tcp_bind, config.tcp_port);
     let tcp_listener = match TcpListener::bind(&tcp_addr).await {
         Ok(l) => l,
         Err(e) => {
-            error!("Failed to bind TCP bridge server to {}: {}", tcp_addr, e);
+            error!("Failed to bind TCP bridge server to {tcp_addr}: {e}");
             return;
         }
     };
-    info!("TCP bridge server listening on {}", tcp_addr);
+    info!("TCP bridge server listening on {tcp_addr}");
 
     let domains = vec![format!("{}:{}", config.ws_host, config.ws_port)];
 
     let tls_config: Option<tls::TlsConfig> = match config.to_tls_config() {
         Ok(cfg) => cfg,
         Err(e) => {
-            error!("Invalid TLS configuration: {}", e);
+            error!("Invalid TLS configuration: {e}");
             return;
         }
     };
@@ -50,11 +50,11 @@ pub async fn run_server(config: Arc<Config>) {
     let tls_acceptor = match tls_config.as_ref() {
         Some(cfg) => match cfg.build(&domains).await {
             Ok(a) => {
-                info!("WSS (TLS) enabled on {}", ws_addr);
+                info!("WSS (TLS) enabled on {ws_addr}");
                 Some(a)
             }
             Err(e) => {
-                error!("Failed to initialize TLS: {}", e);
+                error!("Failed to initialize TLS: {e}");
                 return;
             }
         },
@@ -62,7 +62,7 @@ pub async fn run_server(config: Arc<Config>) {
     };
 
     if tls_acceptor.is_none() {
-        info!("WS (plain) enabled on {}", ws_addr);
+        info!("WS (plain) enabled on {ws_addr}");
     }
 
     let conn_semaphore = Arc::new(Semaphore::new(config.max_connections));
@@ -102,16 +102,13 @@ pub async fn run_server(config: Arc<Config>) {
             result = ws_listener.accept() => {
                 match result {
                     Ok((stream, peer_addr)) => {
-                        let permit = match conn_semaphore.clone().try_acquire_owned() {
-                            Ok(p) => p,
-                            Err(_) => {
-                                warn!(
-                                    "Connection from {} rejected: max connections ({}) reached",
-                                    peer_addr, config.max_connections
-                                );
-                                drop(stream);
-                                continue;
-                            }
+                        let permit = if let Ok(p) = conn_semaphore.clone().try_acquire_owned() { p } else {
+                            warn!(
+                                "Connection from {} rejected: max connections ({}) reached",
+                                peer_addr, config.max_connections
+                            );
+                            drop(stream);
+                            continue;
                         };
 
                         let config = config.clone();
@@ -143,7 +140,7 @@ pub async fn run_server(config: Arc<Config>) {
                                             ).await;
                                         }
                                         Err(e) => {
-                                            error!("TLS handshake failed for {}: {}", peer_addr, e);
+                                            error!("TLS handshake failed for {peer_addr}: {e}");
                                         }
                                     }
                                 } else {
@@ -167,7 +164,7 @@ pub async fn run_server(config: Arc<Config>) {
                         }
                     }
                     Err(e) => {
-                        error!("Error accepting connection: {}", e);
+                        error!("Error accepting connection: {e}");
                     }
                 }
             }
@@ -182,22 +179,19 @@ pub async fn run_server(config: Arc<Config>) {
 
     let active = active_connections.load(Ordering::Acquire);
     if active > 0 {
-        info!(
-            "Waiting for {} active connection(s) to finish (30s timeout)...",
-            active
-        );
+        info!("Waiting for {active} active connection(s) to finish (30s timeout)...");
         let deadline = tokio::time::sleep(Duration::from_secs(30));
         tokio::pin!(deadline);
         loop {
             tokio::select! {
-                _ = &mut deadline => {
+                () = &mut deadline => {
                     warn!(
                         "Drain timeout reached, {} connection(s) still active. Forcing shutdown.",
                         active_connections.load(Ordering::Acquire)
                     );
                     break;
                 }
-                _ = tokio::time::sleep(Duration::from_millis(100)) => {
+                () = tokio::time::sleep(Duration::from_millis(100)) => {
                     if active_connections.load(Ordering::Acquire) == 0 {
                         info!("All connections drained gracefully");
                         break;
@@ -223,7 +217,7 @@ async fn run_tcp_bridge(
                         tokio::spawn(handle_php_connection(stream, peer_addr, bridge_manager.clone()));
                     }
                     Err(e) => {
-                        error!("TCP bridge accept error: {}", e);
+                        error!("TCP bridge accept error: {e}");
                     }
                 }
             }
@@ -261,27 +255,18 @@ async fn handle_php_connection(
         Some(conn_id)
     };
 
-    let conn_id = match tokio::time::timeout(Duration::from_secs(10), read_id).await {
-        Ok(Some(id)) => id,
-        _ => {
-            debug!(
-                "PHP connection {} failed to send valid connection ID",
-                peer_addr
-            );
-            return;
-        }
+    let conn_id = if let Ok(Some(id)) = tokio::time::timeout(Duration::from_secs(10), read_id).await
+    {
+        id
+    } else {
+        debug!("PHP connection {peer_addr} failed to send valid connection ID");
+        return;
     };
 
-    debug!(
-        "PHP connection {} identified as bridge {}",
-        peer_addr, conn_id
-    );
+    debug!("PHP connection {peer_addr} identified as bridge {conn_id}");
 
     if !bridge_manager.resolve(&conn_id, stream).await {
-        warn!(
-            "PHP connection {}: no pending bridge for connection ID {}",
-            peer_addr, conn_id
-        );
+        warn!("PHP connection {peer_addr}: no pending bridge for connection ID {conn_id}");
     }
 }
 
@@ -343,7 +328,7 @@ async fn handle_tcp_stream<S>(
             .await;
         }
         Err(e) => {
-            error!("WebSocket handshake failed for {}: {}", peer_addr, e);
+            error!("WebSocket handshake failed for {peer_addr}: {e}");
         }
     }
 }

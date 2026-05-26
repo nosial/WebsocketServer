@@ -35,21 +35,14 @@ pub async fn handle_connection<S>(
 {
     let conn_id = Uuid::new_v4().to_string();
 
-    let _proc_permit = match proc_semaphore.try_acquire_owned() {
-        Ok(p) => p,
-        Err(_) => {
-            warn!(
-                "Connection {}: max PHP processes reached, rejecting",
-                conn_id
-            );
-            return;
-        }
+    let _proc_permit = if let Ok(p) = proc_semaphore.try_acquire_owned() {
+        p
+    } else {
+        warn!("Connection {conn_id}: max PHP processes reached, rejecting");
+        return;
     };
 
-    debug!(
-        "Connection {}: new WebSocket connection from {}",
-        conn_id, client_addr
-    );
+    debug!("Connection {conn_id}: new WebSocket connection from {client_addr}");
 
     // Register pending bridge before spawning PHP
     let tcp_rx = bridge_manager.register(conn_id.clone()).await;
@@ -65,29 +58,23 @@ pub async fn handle_connection<S>(
 
     let proc =
         spawn_php_with_retry(&php_config, env_vars, config.php_connect_retries, &conn_id).await;
-    let (child, php_stdout) = match proc {
-        Some(p) => {
-            let stdout = p.stdout;
-            (Arc::new(Mutex::new(Some(p.child))), stdout)
-        }
-        None => {
-            error!(
-                "Connection {}: failed to spawn PHP process after retries",
-                conn_id
-            );
-            bridge_manager.remove(&conn_id).await;
-            return;
-        }
+    let (child, php_stdout) = if let Some(p) = proc {
+        let stdout = p.stdout;
+        (Arc::new(Mutex::new(Some(p.child))), stdout)
+    } else {
+        error!("Connection {conn_id}: failed to spawn PHP process after retries");
+        bridge_manager.remove(&conn_id).await;
+        return;
     };
 
     let tcp_stream =
         match tokio::time::timeout(Duration::from_secs(config.php_connect_timeout), tcp_rx).await {
             Ok(Ok(stream)) => {
-                info!("Connection {}: PHP process connected", conn_id);
+                info!("Connection {conn_id}: PHP process connected");
                 stream
             }
             Ok(Err(_)) => {
-                error!("Connection {}: bridge receiver cancelled", conn_id);
+                error!("Connection {conn_id}: bridge receiver cancelled");
                 cleanup_child(&child).await;
                 return;
             }
@@ -142,15 +129,15 @@ pub async fn handle_connection<S>(
     tokio::pin!(fwd_ws, fwd_tcp);
 
     tokio::select! {
-        _ = &mut fwd_ws => {},
-        _ = &mut fwd_tcp => {},
-        _ = async { if let Some(ref mut f) = fwd_stdout { f.await } else { std::future::pending::<()>().await } } => {},
-        _ = &mut child_monitor => {},
-        _ = async { if let Some(ref mut f) = conn_timeout { f.as_mut().await; debug!("Connection {}: connection timeout reached", conn_id); } else { std::future::pending::<()>().await; } } => {},
-        _ = async { if let Some(ref mut f) = php_timeout { f.as_mut().await; debug!("Connection {}: PHP timeout reached", conn_id); } else { std::future::pending::<()>().await; } } => {},
+        () = &mut fwd_ws => {},
+        () = &mut fwd_tcp => {},
+        () = async { if let Some(ref mut f) = fwd_stdout { f.await } else { std::future::pending::<()>().await } } => {},
+        () = &mut child_monitor => {},
+        () = async { if let Some(ref mut f) = conn_timeout { f.as_mut().await; debug!("Connection {conn_id}: connection timeout reached"); } else { std::future::pending::<()>().await; } } => {},
+        () = async { if let Some(ref mut f) = php_timeout { f.as_mut().await; debug!("Connection {conn_id}: PHP timeout reached"); } else { std::future::pending::<()>().await; } } => {},
     }
 
-    info!("Connection {}: closing connection", conn_id);
+    info!("Connection {conn_id}: closing connection");
     cleanup_child(&child).await;
 }
 
@@ -206,8 +193,7 @@ fn build_env_vars(
         let after_slash = &request.uri[path_start..];
         let path_end = after_slash
             .find('?')
-            .map(|i| path_start + i)
-            .unwrap_or(request.uri.len());
+            .map_or(request.uri.len(), |i| path_start + i);
         env.insert(
             "WSS_REQUEST_PATH".into(),
             request.uri[path_start..path_end].to_string(),

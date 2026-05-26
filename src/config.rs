@@ -394,8 +394,7 @@ impl Config {
             "automate" | "acme" => tls::TlsMode::Automate,
             other => {
                 return Err(format!(
-                    "Invalid --tls-mode: {}. Expected: manual, internal, automate",
-                    other
+                    "Invalid --tls-mode: {other}. Expected: manual, internal, automate"
                 ))
             }
         };
@@ -406,12 +405,9 @@ impl Config {
             "p384" => tls::KeyType::P384,
             "rsa2048" => tls::KeyType::Rsa2048,
             "rsa4096" => tls::KeyType::Rsa4096,
-            other => {
-                return Err(format!(
-                    "Invalid --tls-key-type: {}. Expected: ed25519, p256, p384, rsa2048, rsa4096",
-                    other
-                ))
-            }
+            other => return Err(format!(
+                "Invalid --tls-key-type: {other}. Expected: ed25519, p256, p384, rsa2048, rsa4096"
+            )),
         };
 
         let client_auth_mode = match self.tls_client_auth_mode.as_deref() {
@@ -420,7 +416,7 @@ impl Config {
             Some("require") => Some(tls::ClientAuthMode::Require),
             Some("verify_if_given") => Some(tls::ClientAuthMode::VerifyIfGiven),
             Some("require_and_verify") => Some(tls::ClientAuthMode::RequireAndVerify),
-            Some(other) => return Err(format!("Invalid --tls-client-auth-mode: {}", other)),
+            Some(other) => return Err(format!("Invalid --tls-client-auth-mode: {other}")),
         };
 
         let dns_provider = self.tls_dns_provider.as_ref().map(|name| tls::DnsProvider {

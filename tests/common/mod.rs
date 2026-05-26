@@ -92,18 +92,18 @@ impl TestServer {
             if Instant::now() > deadline {
                 let _ = child.kill();
                 let _ = child.wait();
-                panic!("Server failed to start on port {} within 10s", port);
+                panic!("Server failed to start on port {port} within 10s");
             }
-            if TcpStream::connect(format!("127.0.0.1:{}", port)).is_ok() {
+            if TcpStream::connect(format!("127.0.0.1:{port}")).is_ok() {
                 break;
             }
             std::thread::sleep(Duration::from_millis(100));
         }
 
-        TestServer { child, port }
+        Self { child, port }
     }
 
-    pub fn port(&self) -> u16 {
+    pub const fn port(&self) -> u16 {
         self.port
     }
 
@@ -235,8 +235,8 @@ pub async fn assert_echo(url: &str, input: &str, connector: Option<Connector>) {
         .expect("Recv error");
 
     let text = match resp {
-        Message::Text(t) => t.to_string(),
-        Message::Binary(b) => String::from_utf8(b.to_vec()).unwrap(),
+        Message::Text(t) => t,
+        Message::Binary(b) => String::from_utf8(b).unwrap(),
         _ => panic!("Unexpected message type"),
     };
 
