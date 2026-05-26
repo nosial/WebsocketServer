@@ -32,9 +32,7 @@ fn find_echo_responder(manifest_dir: &Path) -> PathBuf {
             }
         }
     }
-    panic!(
-        "echo_responder binary not found in target/debug or target/release"
-    );
+    panic!("echo_responder binary not found in target/debug or target/release");
 }
 
 /// A running server instance for integration tests.
