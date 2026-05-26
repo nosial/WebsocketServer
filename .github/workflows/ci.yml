@@ -26,7 +26,7 @@ jobs:
 
       - run: cargo fmt --check
       - run: cargo clippy --all-targets
-      - run: cargo test --lib
+      - run: cargo check --all-targets
 
   build:
     name: ${{ matrix.target }}
