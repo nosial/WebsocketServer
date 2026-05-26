@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::Connector;
 
-/// Find the echo_responder test binary in the target directory.
+/// Find the `echo_responder` test binary in the target directory.
 /// Cargo compiles `tests/echo_responder.rs` as `echo_responder-<hash>`.
 fn find_echo_responder(manifest_dir: &Path) -> PathBuf {
     for dir in &["debug", "release"] {
@@ -296,9 +296,8 @@ pub async fn assert_echo_binary(url: &str, connector: Option<Connector>) {
         .expect("Stream ended")
         .expect("Recv error");
 
-    let data = match resp {
-        Message::Binary(b) => b,
-        _ => panic!("Expected binary response"),
+    let Message::Binary(data) = resp else {
+        panic!("Expected binary response")
     };
 
     let expected = b"BINARY DATA".to_vec();

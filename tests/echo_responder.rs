@@ -18,15 +18,14 @@ fn main() {
     let mut buf = vec![0u8; 8192];
     loop {
         match stream.read(&mut buf) {
-            Ok(0) => break,
+            Ok(0) | Err(_) => break,
             Ok(n) => {
-                for b in buf[..n].iter_mut() {
+                for b in &mut buf[..n] {
                     b.make_ascii_uppercase();
                 }
                 stream.write_all(&buf[..n]).unwrap();
                 stream.flush().unwrap();
             }
-            Err(_) => break,
         }
     }
 }
