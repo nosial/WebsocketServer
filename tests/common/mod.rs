@@ -8,20 +8,27 @@ use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::Connector;
 
 /// Find the `echo_responder` test binary in the target directory.
-/// Cargo compiles `tests/echo_responder.rs` as `echo_responder-<hash>`.
+/// Cargo compiles `tests/echo_responder.rs` as `echo_responder-<hash>` in `target/debug/deps/`.
 fn find_echo_responder(manifest_dir: &Path) -> PathBuf {
-    for dir in &["debug", "release"] {
-        let target = manifest_dir.join("target").join(dir);
-        if !target.is_dir() {
+    let search_dirs = ["debug", "release"]
+        .iter()
+        .flat_map(|&dir| {
+            let base = manifest_dir.join("target").join(dir);
+            [base.clone(), base.join("deps")]
+        })
+        .collect::<Vec<_>>();
+
+    for dir in &search_dirs {
+        if !dir.is_dir() {
             continue;
         }
         // Check exact name first (matches [[bin]] name from before the move)
-        let exact = target.join("echo-responder");
+        let exact = dir.join("echo-responder");
         if exact.exists() {
             return exact;
         }
         // Search for test binary name (echo_responder-<hash>)
-        if let Ok(entries) = std::fs::read_dir(&target) {
+        if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {

@@ -97,15 +97,11 @@ async fn test_ws_clean_close() {
 
     // Connection should see a close/error
     let result = tokio::time::timeout(std::time::Duration::from_secs(5), ws.next()).await;
-    match result {
-        Ok(Some(Ok(msg))) => {
-            assert!(
-                msg.is_close() || msg.is_ping() || msg.is_pong(),
-                "Expected close or control frame after server drop, got {msg:?}"
-            );
-        }
-        Ok(Some(Err(_))) | Ok(None) => {} // connection reset or stream ended — fine
-        Err(_) => {}                      // timeout — also fine
+    if let Ok(Some(Ok(msg))) = result {
+        assert!(
+            msg.is_close() || msg.is_ping() || msg.is_pong(),
+            "Expected close or control frame after server drop, got {msg:?}"
+        );
     }
 }
 

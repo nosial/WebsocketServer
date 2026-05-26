@@ -3,8 +3,10 @@ use std::io::{Read, Write};
 use std::net::TcpStream;
 
 fn main() {
+    let Ok(port) = env::var("WSS_TCP_PORT") else {
+        return; // run standalone by Cargo test runner — exit silently
+    };
     let host = env::var("WSS_TCP_HOST").unwrap_or_else(|_| "127.0.0.1".into());
-    let port = env::var("WSS_TCP_PORT").expect("WSS_TCP_PORT not set");
     let conn_id = env::var("WSS_CONNECTION_ID").expect("WSS_CONNECTION_ID not set");
 
     let addr = format!("{host}:{port}");
