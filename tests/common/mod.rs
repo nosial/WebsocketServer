@@ -7,7 +7,35 @@ use std::time::{Duration, Instant};
 use tokio_tungstenite::tungstenite::client::IntoClientRequest;
 use tokio_tungstenite::Connector;
 
-const ECHO_BIN: &str = "echo-responder";
+/// Find the echo_responder test binary in the target directory.
+/// Cargo compiles `tests/echo_responder.rs` as `echo_responder-<hash>`.
+fn find_echo_responder(manifest_dir: &Path) -> PathBuf {
+    for dir in &["debug", "release"] {
+        let target = manifest_dir.join("target").join(dir);
+        if !target.is_dir() {
+            continue;
+        }
+        // Check exact name first (matches [[bin]] name from before the move)
+        let exact = target.join("echo-responder");
+        if exact.exists() {
+            return exact;
+        }
+        // Search for test binary name (echo_responder-<hash>)
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if name.starts_with("echo_responder-") || name.starts_with("echo-responder-") {
+                        return path;
+                    }
+                }
+            }
+        }
+    }
+    panic!(
+        "echo_responder binary not found in target/debug or target/release"
+    );
+}
 
 /// A running server instance for integration tests.
 pub struct TestServer {
@@ -57,7 +85,7 @@ impl TestServer {
         };
 
         let binary = prefix("websocket-server");
-        let echo_responder = prefix(ECHO_BIN);
+        let echo_responder = find_echo_responder(&manifest_dir);
 
         let mut cmd = Command::new(&binary);
         cmd.arg("--php-executable")
