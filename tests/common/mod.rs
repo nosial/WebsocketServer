@@ -34,9 +34,7 @@ fn find_echo_responder(manifest_dir: &Path) -> PathBuf {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if (name.starts_with("echo_responder-") || name.starts_with("echo-responder-"))
                         && path.metadata().is_ok_and(|m| m.is_file())
-                        && Path::new(name)
-                            .extension()
-                            .map_or(true, |ext| ext != "d")
+                        && Path::new(name).extension().map_or(true, |ext| ext != "d")
                     {
                         return path;
                     }
@@ -52,7 +50,10 @@ fn find_echo_responder(manifest_dir: &Path) -> PathBuf {
         .current_dir(manifest_dir)
         .status()
         .expect("Failed to run cargo to build echo_responder");
-    assert!(status.success(), "cargo test --no-run --test echo_responder failed");
+    assert!(
+        status.success(),
+        "cargo test --no-run --test echo_responder failed"
+    );
 
     // Search again after building
     for dir in &search_dirs {
@@ -69,9 +70,7 @@ fn find_echo_responder(manifest_dir: &Path) -> PathBuf {
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
                     if (name.starts_with("echo_responder-") || name.starts_with("echo-responder-"))
                         && path.metadata().is_ok_and(|m| m.is_file())
-                        && Path::new(name)
-                            .extension()
-                            .map_or(true, |ext| ext != "d")
+                        && Path::new(name).extension().map_or(true, |ext| ext != "d")
                     {
                         return path;
                     }
