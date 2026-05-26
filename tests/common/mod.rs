@@ -24,22 +24,63 @@ fn find_echo_responder(manifest_dir: &Path) -> PathBuf {
         }
         // Check exact name first (matches [[bin]] name from before the move)
         let exact = dir.join("echo-responder");
-        if exact.exists() {
+        if exact.exists() && exact.is_file() {
             return exact;
         }
-        // Search for test binary name (echo_responder-<hash>)
+        // Search for test binary name (echo_responder-<hash>), excluding .d files
         if let Ok(entries) = std::fs::read_dir(dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
                 if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                    if name.starts_with("echo_responder-") || name.starts_with("echo-responder-") {
+                    if (name.starts_with("echo_responder-") || name.starts_with("echo-responder-"))
+                        && path.metadata().is_ok_and(|m| m.is_file())
+                        && Path::new(name)
+                            .extension()
+                            .map_or(true, |ext| ext != "d")
+                    {
                         return path;
                     }
                 }
             }
         }
     }
-    panic!("echo_responder binary not found in target/debug or target/release");
+
+    // If not found, build it. Cargo releases the build lock before running tests,
+    // so this won't deadlock.
+    let status = Command::new("cargo")
+        .args(["test", "--no-run", "--test", "echo_responder"])
+        .current_dir(manifest_dir)
+        .status()
+        .expect("Failed to run cargo to build echo_responder");
+    assert!(status.success(), "cargo test --no-run --test echo_responder failed");
+
+    // Search again after building
+    for dir in &search_dirs {
+        if !dir.is_dir() {
+            continue;
+        }
+        let exact = dir.join("echo-responder");
+        if exact.exists() && exact.is_file() {
+            return exact;
+        }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                    if (name.starts_with("echo_responder-") || name.starts_with("echo-responder-"))
+                        && path.metadata().is_ok_and(|m| m.is_file())
+                        && Path::new(name)
+                            .extension()
+                            .map_or(true, |ext| ext != "d")
+                    {
+                        return path;
+                    }
+                }
+            }
+        }
+    }
+
+    panic!("echo_responder binary not found in target directories");
 }
 
 /// A running server instance for integration tests.
