@@ -36,3 +36,4 @@
 
 # Project-specific
 acme-state/
+/Cargo.lock
