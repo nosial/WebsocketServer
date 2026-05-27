@@ -11,18 +11,23 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: "-D warnings"
+  CARGO_INCREMENTAL: 0
 
 jobs:
   check:
     name: Check
     runs-on: ubuntu-latest
+    env:
+      RUSTFLAGS: "-D warnings -C link-arg=-fuse-ld=mold"
     steps:
       - uses: actions/checkout@v6
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy, rustfmt
+
+      - name: Install mold linker
+        run: sudo apt-get update -yqq && sudo apt-get install -yqq mold
 
       - uses: Swatinem/rust-cache@v2
 
@@ -56,9 +61,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Install mold linker (Linux only)
+        if: matrix.os == 'ubuntu-latest'
+        run: sudo apt-get update -yqq && sudo apt-get install -yqq mold
+
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo build --release --target ${{ matrix.target }}
+        env:
+          RUSTFLAGS: "-D warnings ${{ matrix.os == 'ubuntu-latest' && '-C link-arg=-fuse-ld=mold' || '' }}"
 
       - uses: actions/upload-artifact@v4
         with:
