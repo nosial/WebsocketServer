@@ -138,13 +138,9 @@ pub async fn handle_connection<S>(
                     Some(status) => {
                         guard.take();
                         if let Some(code) = status.code() {
-                            info!(
-                                "Connection {conn_id}: PHP process exited with code {code}"
-                            );
+                            info!("Connection {conn_id}: PHP process exited with code {code}");
                         } else {
-                            info!(
-                                "Connection {conn_id}: PHP process killed by signal"
-                            );
+                            info!("Connection {conn_id}: PHP process killed by signal");
                         }
                         return;
                     }
@@ -155,12 +151,7 @@ pub async fn handle_connection<S>(
         }
     };
 
-    let fwd_ws = forward_ws_to_tcp(
-        ws_reader,
-        tcp_writer,
-        config.buffer_size,
-        conn_id.clone(),
-    );
+    let fwd_ws = forward_ws_to_tcp(ws_reader, tcp_writer, config.buffer_size, conn_id.clone());
     let fwd_tcp = forward_tcp_to_ws(
         tcp_reader,
         ws_writer.clone(),
@@ -200,9 +191,9 @@ pub async fn handle_connection<S>(
         _ = &mut fwd_tcp => CloseReason::TcpClosedByPhp,
         _ = async {
             if let Some(ref mut f) = fwd_stdout {
-                f.await
+                f.await;
             } else {
-                std::future::pending::<()>().await
+                std::future::pending::<()>().await;
             }
         } => CloseReason::StdoutEof,
         _ = &mut child_monitor => {
@@ -222,7 +213,7 @@ pub async fn handle_connection<S>(
                 f.as_mut().await;
                 debug!("Connection {conn_id}: connection timeout reached");
             } else {
-                std::future::pending::<()>().await
+                std::future::pending::<()>().await;
             }
         } => CloseReason::ConnectionTimeout,
         _ = async {
@@ -230,7 +221,7 @@ pub async fn handle_connection<S>(
                 f.as_mut().await;
                 debug!("Connection {conn_id}: PHP timeout reached");
             } else {
-                std::future::pending::<()>().await
+                std::future::pending::<()>().await;
             }
         } => CloseReason::PhpTimeout,
     };
@@ -391,12 +382,10 @@ async fn forward_ws_to_tcp<S>(
                 let _ = tcp_writer.flush().await;
             }
             Ok(Message::Close(frame)) => {
-                debug!(
-                    "Connection {conn_id}: WebSocket client sent close frame: {frame:?}"
-                );
+                debug!("Connection {conn_id}: WebSocket client sent close frame: {frame:?}");
                 break;
             }
-            Ok(Message::Ping(_)) | Ok(Message::Pong(_)) | Ok(Message::Frame(_)) => {}
+            Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
             Err(e) => {
                 match &e {
                     WsError::ConnectionClosed => {
@@ -464,9 +453,7 @@ async fn forward_stdout_to_ws<S>(
     loop {
         match reader.read(&mut buf).await {
             Ok(0) => {
-                debug!(
-                    "Connection {conn_id}: PHP stdout closed (EOF after {total_bytes} bytes)"
-                );
+                debug!("Connection {conn_id}: PHP stdout closed (EOF after {total_bytes} bytes)");
                 break;
             }
             Ok(n) => {
