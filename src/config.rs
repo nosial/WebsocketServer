@@ -7,7 +7,7 @@ use crate::tls;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "websocket-server")]
-#[command(version = "1.0.1")]
+#[command(version = "1.0.2")]
 #[command(author = "Nosial")]
 #[command(about = "WebSocket to TCP bridge server for PHP applications")]
 pub struct Config {
