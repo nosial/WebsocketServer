@@ -35,6 +35,7 @@ mod tls;
 use std::sync::Arc;
 
 use clap::Parser;
+use log::info;
 
 use crate::config::Config;
 
@@ -47,10 +48,24 @@ fn main() {
         "debug" => "debug",
         "warn" | "warning" => "warn",
         "error" => "error",
-        _ => "info",
+        _ => {
+            eprintln!(
+                "Warning: unknown log level '{}', defaulting to 'info'. Valid levels: trace, debug, info, warn, error",
+                log_level
+            );
+            "info"
+        }
     };
 
-    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(filter)).init();
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(filter))
+        .format_timestamp_millis()
+        .init();
+
+    info!(
+        "WebsocketServer v{} starting with log level '{}'",
+        env!("CARGO_PKG_VERSION"),
+        filter
+    );
 
     let config = Arc::new(config);
 

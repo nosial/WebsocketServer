@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
-use log::{debug, error, info, warn};
+use log::{debug, error, info, trace, warn};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::process::Child;
 use tokio::sync::{Mutex, Semaphore};
@@ -16,7 +16,6 @@ use crate::bridge::BridgeManager;
 use crate::config::Config;
 use crate::php;
 
-/// Describes why a WebSocket connection was closed.
 #[derive(Debug, Clone, PartialEq)]
 #[allow(dead_code)]
 enum CloseReason {
@@ -26,6 +25,7 @@ enum CloseReason {
     PhpProcessExited(Option<i32>),
     ConnectionTimeout,
     PhpTimeout,
+    ShutdownComplete,
 }
 
 impl fmt::Display for CloseReason {
@@ -38,11 +38,14 @@ impl fmt::Display for CloseReason {
                 if let Some(c) = code {
                     write!(f, "PHP process exited with code {c}")
                 } else {
-                    write!(f, "PHP process exited (no status)")
+                    write!(f, "PHP process exited (no status code)")
                 }
             }
-            CloseReason::ConnectionTimeout => write!(f, "connection timeout reached"),
+            CloseReason::ConnectionTimeout => write!(f, "connection lifetime timeout reached"),
             CloseReason::PhpTimeout => write!(f, "PHP execution timeout reached"),
+            CloseReason::ShutdownComplete => {
+                write!(f, "clean shutdown after all forwarding completed")
+            }
         }
     }
 }
@@ -67,20 +70,35 @@ pub async fn handle_connection<S>(
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let conn_id = Uuid::new_v4().to_string();
-
     let _proc_permit = if let Ok(p) = proc_semaphore.try_acquire_owned() {
         p
     } else {
-        warn!("Connection {conn_id}: max PHP processes reached, rejecting");
+        warn!(
+            "Connection {conn_id}: max PHP processes ({}) reached, rejecting connection from {client_addr}",
+            config.max_processes
+        );
         return;
     };
 
-    debug!("Connection {conn_id}: new WebSocket connection from {client_addr}");
+    info!(
+        "Connection {conn_id}: new WebSocket connection established from {client_addr} (URI: {})",
+        request.uri
+    );
+    trace!(
+        "Connection {conn_id}: request headers: {:?}, server_addr: {:?}",
+        request.headers,
+        server_addr
+    );
 
-    // Register pending bridge before spawning PHP
     let tcp_rx = bridge_manager.register(conn_id.clone()).await;
 
     let env_vars = build_env_vars(&conn_id, &client_addr, &server_addr, &request, &config);
+
+    debug!(
+        "Connection {conn_id}: built {} environment variables for PHP process",
+        env_vars.len()
+    );
+    trace!("Connection {conn_id}: environment variables: {env_vars:?}");
 
     let php_config = php::PhpConfig {
         executable: config.php_executable.clone(),
@@ -95,61 +113,65 @@ pub async fn handle_connection<S>(
         let stdout = p.stdout;
         (Arc::new(Mutex::new(Some(p.child))), stdout)
     } else {
-        error!("Connection {conn_id}: failed to spawn PHP process after retries");
+        error!(
+            "Connection {conn_id}: failed to spawn PHP process after {} retries, removing bridge registration",
+            config.php_connect_retries + 1
+        );
         bridge_manager.remove(&conn_id).await;
         return;
     };
 
-    let tcp_stream =
-        match tokio::time::timeout(Duration::from_secs(config.php_connect_timeout), tcp_rx).await {
-            Ok(Ok(stream)) => {
-                info!("Connection {conn_id}: PHP process connected");
+    debug!(
+        "Connection {conn_id}: PHP process spawned, waiting for TCP back-connection (timeout: {}s)",
+        config.php_connect_timeout
+    );
+
+    let tcp_stream = match tokio::time::timeout(
+        Duration::from_secs(config.php_connect_timeout),
+        tcp_rx,
+    )
+    .await
+    {
+        Ok(Ok(stream)) => {
+            info!(
+                "Connection {conn_id}: PHP process connected back via TCP bridge ({}:{} <- {})",
                 stream
-            }
-            Ok(Err(_)) => {
-                error!("Connection {conn_id}: bridge receiver cancelled");
-                cleanup_child(&child, &conn_id).await;
-                return;
-            }
-            Err(_) => {
-                warn!(
-                    "Connection {}: PHP did not connect within {}s",
-                    conn_id, config.php_connect_timeout
-                );
-                bridge_manager.remove(&conn_id).await;
-                cleanup_child(&child, &conn_id).await;
-                return;
-            }
-        };
+                    .local_addr()
+                    .map(|a| a.ip().to_string())
+                    .unwrap_or_default(),
+                stream
+                    .local_addr()
+                    .map(|a| a.port().to_string())
+                    .unwrap_or_default(),
+                stream
+                    .peer_addr()
+                    .map(|a| a.to_string())
+                    .unwrap_or_default()
+            );
+            stream
+        }
+        Ok(Err(_)) => {
+            error!(
+                "Connection {conn_id}: bridge receiver cancelled (oneshot dropped), PHP process may have crashed before connecting"
+            );
+            cleanup_child(&child, &conn_id).await;
+            bridge_manager.remove(&conn_id).await;
+            return;
+        }
+        Err(_) => {
+            warn!(
+                "Connection {conn_id}: PHP process did not connect back within {}s (timeout)",
+                config.php_connect_timeout
+            );
+            cleanup_child(&child, &conn_id).await;
+            bridge_manager.remove(&conn_id).await;
+            return;
+        }
+    };
 
     let (tcp_reader, tcp_writer) = tcp_stream.into_split();
     let (ws_writer, ws_reader) = ws_stream.split();
-
     let ws_writer: SharedWsWriter<S> = Arc::new(Mutex::new(ws_writer));
-
-    let child_monitor = {
-        let child = child.clone();
-        let conn_id = conn_id.clone();
-        async move {
-            loop {
-                tokio::time::sleep(Duration::from_millis(100)).await;
-                let mut guard = child.lock().await;
-                match guard.as_mut().and_then(|c| c.try_wait().ok()).flatten() {
-                    Some(status) => {
-                        guard.take();
-                        if let Some(code) = status.code() {
-                            info!("Connection {conn_id}: PHP process exited with code {code}");
-                        } else {
-                            info!("Connection {conn_id}: PHP process killed by signal");
-                        }
-                        return;
-                    }
-                    None if guard.is_none() => return,
-                    _ => {}
-                }
-            }
-        }
-    };
 
     let fwd_ws = forward_ws_to_tcp(ws_reader, tcp_writer, config.buffer_size, conn_id.clone());
     let fwd_tcp = forward_tcp_to_ws(
@@ -161,12 +183,12 @@ pub async fn handle_connection<S>(
     let mut fwd_stdout = php_stdout.map(|s| {
         Box::pin(forward_stdout_to_ws(
             s,
-            ws_writer,
+            ws_writer.clone(),
             config.buffer_size,
             conn_id.clone(),
         ))
     });
-    let mut child_monitor = Box::pin(child_monitor);
+    let child_wait = Box::pin(wait_for_child(child.clone(), conn_id.clone()));
 
     let mut conn_timeout = if config.connection_timeout > 0 {
         Some(Box::pin(tokio::time::sleep(Duration::from_secs(
@@ -184,50 +206,72 @@ pub async fn handle_connection<S>(
         None
     };
 
-    tokio::pin!(fwd_ws, fwd_tcp);
+    tokio::pin!(fwd_ws, fwd_tcp, child_wait);
 
     let reason = tokio::select! {
-        _ = &mut fwd_ws => CloseReason::ClientDisconnected,
-        _ = &mut fwd_tcp => CloseReason::TcpClosedByPhp,
-        _ = async {
-            if let Some(ref mut f) = fwd_stdout {
-                f.await;
-            } else {
-                std::future::pending::<()>().await;
-            }
-        } => CloseReason::StdoutEof,
-        _ = &mut child_monitor => {
-            // child_monitor already logs the exit reason; return a generic reason here
-            // but we try to extract the status from the child one more time
-            let status = {
-                let mut guard = child.lock().await;
-                guard.as_mut().and_then(|c| c.try_wait().ok()).flatten()
-            };
-            match status.and_then(|s| s.code()) {
-                Some(code) => CloseReason::PhpProcessExited(Some(code)),
-                None => CloseReason::PhpProcessExited(None),
+        _ = &mut fwd_ws => {
+            debug!("Connection {conn_id}: ws→tcp forwarder completed (client sent close or TCP write failed)");
+            CloseReason::ClientDisconnected
+        }
+        _ = &mut fwd_tcp => {
+            debug!("Connection {conn_id}: tcp→ws forwarder completed (TCP stream closed or WS write failed)");
+            CloseReason::TcpClosedByPhp
+        }
+        _ = async { if let Some(ref mut f) = fwd_stdout { f.await; } else { std::future::pending::<()>().await; } } => {
+            debug!("Connection {conn_id}: stdout→ws forwarder completed (PHP stdout EOF)");
+            CloseReason::StdoutEof
+        }
+        exit_status = &mut child_wait => {
+            match exit_status {
+                Some(code) => {
+                    info!("Connection {conn_id}: PHP process exited with code {code}");
+                    CloseReason::PhpProcessExited(Some(code))
+                }
+                None => {
+                    info!("Connection {conn_id}: PHP process terminated by signal");
+                    CloseReason::PhpProcessExited(None)
+                }
             }
         }
-        _ = async {
-            if let Some(ref mut f) = conn_timeout {
-                f.as_mut().await;
-                debug!("Connection {conn_id}: connection timeout reached");
-            } else {
-                std::future::pending::<()>().await;
-            }
-        } => CloseReason::ConnectionTimeout,
-        _ = async {
-            if let Some(ref mut f) = php_timeout {
-                f.as_mut().await;
-                debug!("Connection {conn_id}: PHP timeout reached");
-            } else {
-                std::future::pending::<()>().await;
-            }
-        } => CloseReason::PhpTimeout,
+        _ = async { if let Some(ref mut f) = conn_timeout { f.await; } else { std::future::pending::<()>().await; } } => {
+            info!("Connection {conn_id}: connection lifetime timeout ({}s) reached", config.connection_timeout);
+            CloseReason::ConnectionTimeout
+        }
+        _ = async { if let Some(ref mut f) = php_timeout { f.await; } else { std::future::pending::<()>().await; } } => {
+            info!("Connection {conn_id}: PHP execution timeout ({}s) reached", config.php_timeout);
+            CloseReason::PhpTimeout
+        }
     };
 
-    info!("Connection {conn_id}: closing connection: {reason}");
+    info!("Connection {conn_id}: closing connection — reason: {reason}");
     cleanup_child(&child, &conn_id).await;
+    bridge_manager.remove(&conn_id).await;
+    debug!("Connection {conn_id}: resources released");
+}
+
+async fn wait_for_child(child: Arc<Mutex<Option<Child>>>, conn_id: String) -> Option<i32> {
+    let mut child_guard = child.lock().await;
+    let mut c = child_guard.take()?;
+    drop(child_guard);
+
+    debug!("Connection {conn_id}: waiting for PHP process to exit...");
+    match c.wait().await {
+        Ok(status) => {
+            let code = status.code();
+            if let Some(exit_code) = code {
+                trace!(
+                    "Connection {conn_id}: PHP process wait completed with exit code {exit_code}"
+                );
+            } else {
+                trace!("Connection {conn_id}: PHP process wait completed, terminated by signal");
+            }
+            code
+        }
+        Err(e) => {
+            warn!("Connection {conn_id}: error waiting for PHP process: {e}");
+            None
+        }
+    }
 }
 
 async fn spawn_php_with_retry(
@@ -238,18 +282,28 @@ async fn spawn_php_with_retry(
 ) -> Option<php::PhpProcess> {
     for attempt in 0..=retries {
         match php::spawn_php(php_config, env_vars.clone(), conn_id) {
-            Ok(p) => return Some(p),
+            Ok(p) => {
+                if attempt > 0 {
+                    info!(
+                        "Connection {conn_id}: PHP process spawned successfully on retry attempt {}",
+                        attempt + 1
+                    );
+                }
+                return Some(p);
+            }
             Err(e) => {
                 if attempt < retries {
                     warn!(
-                        "Failed to spawn PHP (attempt {}/{}): {}",
+                        "Connection {conn_id}: failed to spawn PHP (attempt {}/{}): {e}",
                         attempt + 1,
-                        retries + 1,
-                        e
+                        retries + 1
                     );
-                    tokio::time::sleep(Duration::from_millis(100)).await;
+                    tokio::time::sleep(Duration::from_millis(200)).await;
                 } else {
-                    error!("Failed to spawn PHP after {} attempts: {}", retries + 1, e);
+                    error!(
+                        "Connection {conn_id}: failed to spawn PHP after all {} attempts: {e}",
+                        retries + 1
+                    );
                 }
             }
         }
@@ -265,19 +319,15 @@ fn build_env_vars(
     config: &Config,
 ) -> HashMap<String, String> {
     let mut env = HashMap::with_capacity(18);
-
     env.insert("WSS_ENABLED".into(), "1".into());
     env.insert("WSS_CONNECTION_ID".into(), conn_id.to_string());
     env.insert("WSS_CLIENT_IP".into(), client_addr.ip().to_string());
     env.insert("WSS_CLIENT_PORT".into(), client_addr.port().to_string());
-
     if let Some(sa) = server_addr {
         env.insert("WSS_SERVER_HOST".into(), sa.ip().to_string());
         env.insert("WSS_SERVER_PORT".into(), sa.port().to_string());
     }
-
     env.insert("WSS_REQUEST_URI".into(), request.uri.clone());
-
     if let Some(path_start) = request.uri.find('/') {
         let after_slash = &request.uri[path_start..];
         let path_end = after_slash
@@ -287,7 +337,6 @@ fn build_env_vars(
             "WSS_REQUEST_PATH".into(),
             request.uri[path_start..path_end].to_string(),
         );
-
         if path_end < request.uri.len() {
             env.insert(
                 "WSS_REQUEST_QUERY".into(),
@@ -297,11 +346,9 @@ fn build_env_vars(
             env.insert("WSS_REQUEST_QUERY".into(), String::new());
         }
     }
-
     if let Ok(json) = serde_json::to_string(&request.headers) {
         env.insert("WSS_REQUEST_HEADERS".into(), json);
     }
-
     for key in [
         "sec-websocket-protocol",
         "sec-websocket-version",
@@ -316,10 +363,8 @@ fn build_env_vars(
             env.insert(env_key, val.clone());
         }
     }
-
     env.insert("WSS_TCP_HOST".into(), config.tcp_bind.clone());
     env.insert("WSS_TCP_PORT".into(), config.tcp_port.to_string());
-
     env
 }
 
@@ -327,20 +372,49 @@ async fn cleanup_child(child: &Arc<Mutex<Option<Child>>>, conn_id: &str) {
     let mut guard = child.lock().await;
     let c = guard.take();
     drop(guard);
+
     if let Some(mut c) = c {
-        let _ = c.kill().await;
-        match c.wait().await {
-            Ok(status) => {
+        match c.try_wait() {
+            Ok(Some(status)) => {
                 if let Some(code) = status.code() {
-                    debug!("Connection {conn_id}: cleaned up PHP process (exit code {code})");
+                    debug!("Connection {conn_id}: PHP process already exited (exit code {code})");
                 } else {
-                    debug!("Connection {conn_id}: cleaned up PHP process (killed by signal)");
+                    debug!("Connection {conn_id}: PHP process already terminated by signal");
                 }
+                return;
+            }
+            Ok(None) => {
+                debug!("Connection {conn_id}: PHP process still running, sending kill signal");
             }
             Err(e) => {
-                debug!("Connection {conn_id}: error waiting for PHP process cleanup: {e}");
+                debug!(
+                    "Connection {conn_id}: error checking PHP process status: {e}, attempting kill"
+                );
             }
         }
+
+        let _ = c.kill().await;
+        debug!("Connection {conn_id}: kill signal sent to PHP process");
+
+        match tokio::time::timeout(Duration::from_secs(5), c.wait()).await {
+            Ok(Ok(status)) => {
+                if let Some(code) = status.code() {
+                    debug!("Connection {conn_id}: PHP process cleaned up (exit code {code})");
+                } else {
+                    debug!("Connection {conn_id}: PHP process cleaned up (killed by signal)");
+                }
+            }
+            Ok(Err(e)) => {
+                warn!("Connection {conn_id}: error waiting for PHP process during cleanup: {e}");
+            }
+            Err(_) => {
+                warn!(
+                    "Connection {conn_id}: PHP process did not exit within 5s after kill, detaching"
+                );
+            }
+        }
+    } else {
+        trace!("Connection {conn_id}: no child process to clean up");
     }
 }
 
@@ -353,6 +427,10 @@ async fn forward_ws_to_tcp<S>(
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     use tokio_tungstenite::tungstenite::Error as WsError;
+
+    trace!("Connection {conn_id}: ws→tcp forwarder started (buffer_size={buffer_size})");
+    let mut total_bytes = 0usize;
+
     while let Some(msg) = ws_reader.next().await {
         match msg {
             Ok(Message::Text(text)) => {
@@ -360,48 +438,82 @@ async fn forward_ws_to_tcp<S>(
                 let mut offset = 0;
                 while offset < bytes.len() {
                     let end = std::cmp::min(offset + buffer_size, bytes.len());
-                    if tcp_writer.write_all(&bytes[offset..end]).await.is_err() {
-                        debug!("Connection {conn_id}: TCP write failed in ws→tcp forwarder");
+                    if let Err(e) = tcp_writer.write_all(&bytes[offset..end]).await {
+                        debug!(
+                            "Connection {conn_id}: TCP write failed in ws→tcp forwarder after {total_bytes} bytes: {e}"
+                        );
                         return;
                     }
                     offset = end;
                 }
                 let _ = tcp_writer.flush().await;
+                total_bytes += bytes.len();
+                trace!(
+                    "Connection {conn_id}: ws→tcp forwarded {} bytes (text, total={total_bytes})",
+                    bytes.len()
+                );
             }
             Ok(Message::Binary(data)) => {
                 let bytes = &data;
                 let mut offset = 0;
                 while offset < bytes.len() {
                     let end = std::cmp::min(offset + buffer_size, bytes.len());
-                    if tcp_writer.write_all(&bytes[offset..end]).await.is_err() {
-                        debug!("Connection {conn_id}: TCP write failed in ws→tcp forwarder");
+                    if let Err(e) = tcp_writer.write_all(&bytes[offset..end]).await {
+                        debug!(
+                            "Connection {conn_id}: TCP write failed in ws→tcp forwarder after {total_bytes} bytes: {e}"
+                        );
                         return;
                     }
                     offset = end;
                 }
                 let _ = tcp_writer.flush().await;
+                total_bytes += bytes.len();
+                trace!(
+                    "Connection {conn_id}: ws→tcp forwarded {} bytes (binary, total={total_bytes})",
+                    bytes.len()
+                );
             }
             Ok(Message::Close(frame)) => {
-                debug!("Connection {conn_id}: WebSocket client sent close frame: {frame:?}");
+                debug!(
+                    "Connection {conn_id}: WebSocket client sent close frame: {frame:?} (total ws→tcp: {total_bytes} bytes)"
+                );
                 break;
             }
-            Ok(Message::Ping(_) | Message::Pong(_) | Message::Frame(_)) => {}
+            Ok(Message::Ping(data)) => {
+                trace!(
+                    "Connection {conn_id}: WebSocket ping received ({data:?}), forwarded as data to TCP"
+                );
+            }
+            Ok(Message::Pong(data)) => {
+                trace!("Connection {conn_id}: WebSocket pong received ({data:?})");
+            }
+            Ok(Message::Frame(_)) => {
+                trace!("Connection {conn_id}: WebSocket raw frame received");
+            }
             Err(e) => {
                 match &e {
                     WsError::ConnectionClosed => {
-                        debug!("Connection {conn_id}: WebSocket client connection closed");
+                        debug!(
+                            "Connection {conn_id}: WebSocket client connection closed (total ws→tcp: {total_bytes} bytes)"
+                        );
                     }
                     WsError::Protocol(msg) => {
-                        debug!("Connection {conn_id}: WebSocket protocol error: {msg}");
+                        debug!(
+                            "Connection {conn_id}: WebSocket protocol error: {msg} (total ws→tcp: {total_bytes} bytes)"
+                        );
                     }
                     _ => {
-                        debug!("Connection {conn_id}: WebSocket error: {e}");
+                        debug!(
+                            "Connection {conn_id}: WebSocket error in forwarder: {e} (total ws→tcp: {total_bytes} bytes)"
+                        );
                     }
                 }
                 break;
             }
         }
     }
+
+    trace!("Connection {conn_id}: ws→tcp forwarder finished, total {total_bytes} bytes forwarded");
 }
 
 async fn forward_tcp_to_ws<S>(
@@ -413,31 +525,46 @@ async fn forward_tcp_to_ws<S>(
     S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 {
     let mut buf = vec![0u8; buffer_size];
+    let mut total_bytes = 0usize;
+
+    trace!("Connection {conn_id}: tcp→ws forwarder started (buffer_size={buffer_size})");
+
     loop {
         match tcp_reader.read(&mut buf).await {
             Ok(0) => {
-                debug!("Connection {conn_id}: TCP stream closed by PHP (clean EOF)");
+                debug!(
+                    "Connection {conn_id}: TCP stream closed by PHP (clean EOF, total tcp→ws: {total_bytes} bytes)"
+                );
                 break;
             }
             Ok(n) => {
+                total_bytes += n;
                 let mut writer = ws_writer.lock().await;
-                if writer
-                    .send(Message::Binary(buf[..n].to_vec()))
-                    .await
-                    .is_err()
-                {
-                    debug!("Connection {conn_id}: WebSocket write failed in tcp→ws forwarder");
+                if let Err(e) = writer.send(Message::Binary(buf[..n].to_vec())).await {
+                    debug!(
+                        "Connection {conn_id}: WebSocket write failed in tcp→ws forwarder after {total_bytes} bytes: {e}"
+                    );
                     break;
                 }
+                trace!(
+                    "Connection {conn_id}: tcp→ws forwarded {} bytes (total={total_bytes})",
+                    n
+                );
             }
             Err(e) => {
-                debug!("Connection {conn_id}: TCP read error: {e}");
+                debug!(
+                    "Connection {conn_id}: TCP read error in tcp→ws forwarder after {total_bytes} bytes: {e}"
+                );
                 break;
             }
         }
     }
+
     let mut writer = ws_writer.lock().await;
     let _ = writer.send(Message::Close(None)).await;
+    trace!(
+        "Connection {conn_id}: tcp→ws forwarder finished, total {total_bytes} bytes forwarded, close frame sent to client"
+    );
 }
 
 async fn forward_stdout_to_ws<S>(
@@ -450,6 +577,9 @@ async fn forward_stdout_to_ws<S>(
 {
     let mut buf = vec![0u8; buffer_size];
     let mut total_bytes = 0usize;
+
+    trace!("Connection {conn_id}: stdout→ws forwarder started (buffer_size={buffer_size})");
+
     loop {
         match reader.read(&mut buf).await {
             Ok(0) => {
@@ -459,19 +589,27 @@ async fn forward_stdout_to_ws<S>(
             Ok(n) => {
                 total_bytes += n;
                 let mut writer = ws_writer.lock().await;
-                if writer
-                    .send(Message::Binary(buf[..n].to_vec()))
-                    .await
-                    .is_err()
-                {
-                    debug!("Connection {conn_id}: WebSocket write failed in stdout→ws forwarder");
+                if let Err(e) = writer.send(Message::Binary(buf[..n].to_vec())).await {
+                    debug!(
+                        "Connection {conn_id}: WebSocket write failed in stdout→ws forwarder after {total_bytes} bytes: {e}"
+                    );
                     break;
                 }
+                trace!(
+                    "Connection {conn_id}: stdout→ws forwarded {} bytes (total={total_bytes})",
+                    n
+                );
             }
             Err(e) => {
-                debug!("Connection {conn_id}: PHP stdout read error: {e}");
+                debug!(
+                    "Connection {conn_id}: PHP stdout read error after {total_bytes} bytes: {e}"
+                );
                 break;
             }
         }
     }
+
+    trace!(
+        "Connection {conn_id}: stdout→ws forwarder finished, total {total_bytes} bytes forwarded"
+    );
 }
