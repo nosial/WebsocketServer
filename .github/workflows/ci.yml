@@ -38,21 +38,52 @@ jobs:
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    permissions:
+      contents: write
     strategy:
       fail-fast: false
       matrix:
         target:
           - x86_64-unknown-linux-gnu
+          - i686-unknown-linux-gnu
+          - aarch64-unknown-linux-gnu
+          - armv7-unknown-linux-gnueabihf
           - x86_64-pc-windows-msvc
+          - i686-pc-windows-msvc
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
             ext: ""
             pkg_suffix: linux-x86_64
+            use_mold: true
+          - target: i686-unknown-linux-gnu
+            os: ubuntu-latest
+            ext: ""
+            pkg_suffix: linux-i686
+            use_mold: false
+            deps: gcc-i686-linux-gnu
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            ext: ""
+            pkg_suffix: linux-aarch64
+            use_mold: false
+            deps: gcc-aarch64-linux-gnu
+          - target: armv7-unknown-linux-gnueabihf
+            os: ubuntu-latest
+            ext: ""
+            pkg_suffix: linux-armv7
+            use_mold: false
+            deps: gcc-arm-linux-gnueabihf
           - target: x86_64-pc-windows-msvc
             os: windows-latest
             ext: ".exe"
             pkg_suffix: windows-x86_64
+            use_mold: false
+          - target: i686-pc-windows-msvc
+            os: windows-latest
+            ext: ".exe"
+            pkg_suffix: windows-i686
+            use_mold: false
 
     steps:
       - uses: actions/checkout@v6
@@ -61,15 +92,22 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install mold linker (Linux only)
-        if: matrix.os == 'ubuntu-latest'
+      - name: Install cross-compilation dependencies
+        if: matrix.deps
+        run: sudo apt-get update -yqq && sudo apt-get install -yqq ${{ matrix.deps }}
+
+      - name: Install mold linker (x86_64 Linux only)
+        if: matrix.use_mold
         run: sudo apt-get update -yqq && sudo apt-get install -yqq mold
 
       - uses: Swatinem/rust-cache@v2
 
       - run: cargo build --release --target ${{ matrix.target }}
         env:
-          RUSTFLAGS: "-D warnings ${{ matrix.os == 'ubuntu-latest' && '-C link-arg=-fuse-ld=mold' || '' }}"
+          RUSTFLAGS: "-D warnings ${{ matrix.use_mold && '-C link-arg=-fuse-ld=mold' || '' }}"
+          CARGO_TARGET_I686_UNKNOWN_LINUX_GNU_LINKER: i686-linux-gnu-gcc
+          CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: aarch64-linux-gnu-gcc
+          CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
 
       - uses: actions/upload-artifact@v4
         with:
@@ -78,18 +116,12 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  release:
-    name: Release
-    if: github.event_name == 'release'
-    needs: [check, build]
-    runs-on: ubuntu-latest
-    permissions: write-all
-
-    steps:
-      - uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-
-      - uses: softprops/action-gh-release@v3
-        with:
-          files: artifacts/**/*
+      - name: Upload release asset
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          asset="websocket-server-${{ matrix.pkg_suffix }}${{ matrix.ext }}"
+          cp "target/${{ matrix.target }}/release/websocket-server${{ matrix.ext }}" "$asset"
+          gh release upload "${{ github.ref_name }}" "$asset" --clobber
